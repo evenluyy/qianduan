@@ -1,0 +1,96 @@
+name: Sync Sub-Store Front-End Latest Dist
+
+on:
+  workflow_dispatch:      # 手动触发
+  schedule:
+    - cron: '0 */6 * * *' # 每6小时自动检查更新（可按需调整）
+
+jobs:
+  fetch-and-sync:
+    runs-on: ubuntu-latest
+    
+    steps:
+      # 1. 检出仓库 main 分支
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+      
+      # 2. 获取最新 release 的下载链接
+      - name: Get latest release download URL
+        id: get_url
+        run: |
+          # 调用 GitHub API 获取最新 release 信息
+          LATEST_RELEASE=$(curl -s https://api.github.com/repos/sub-store-org/Sub-Store-Front-End/releases/latest)
+          # 提取 dist.zip 的下载链接（browser_download_url）
+          DIST_URL=$(echo "$LATEST_RELEASE" | grep -o 'https://github.com/sub-store-org/Sub-Store-Front-End/releases/download/[^"]*dist.zip' | head -1)
+          
+          if [ -z "$DIST_URL" ]; then
+            echo "错误：未找到 dist.zip 下载链接"
+            exit 1
+          fi
+          
+          echo "下载链接: $DIST_URL"
+          echo "dist_url=$DIST_URL" >> $GITHUB_OUTPUT
+          
+          # 同时获取版本号用于 commit 信息
+          VERSION=$(echo "$LATEST_RELEASE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      
+      # 3. 下载最新的 dist.zip
+      - name: Download dist.zip
+        run: |
+          curl -L -o dist.zip "${{ steps.get_url.outputs.dist_url }}"
+          echo "下载完成，文件大小："
+          ls -lh dist.zip
+      
+      # 4. 解压并处理
+      - name: Unzip and prepare files
+        run: |
+          # 创建临时目录
+          mkdir -p ./temp_extract
+          unzip -o dist.zip -d ./temp_extract
+          
+          # 验证解压后是否存在 dist 文件夹
+          if [ ! -d "./temp_extract/dist" ]; then
+            echo "错误：解压后未找到 dist 文件夹"
+            echo "实际目录结构："
+            ls -la ./temp_extract/
+            exit 1
+          fi
+          
+          echo "解压成功，dist 文件夹内容："
+          ls -la ./temp_extract/dist/
+          
+          # 删除当前目录下的旧文件（保留 .git 文件夹）
+          find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' ! -name '.gitignore' ! -name '.github' -exec rm -rf {} + 2>/dev/null || true
+          
+          # 将 dist 文件夹下的所有内容复制到仓库根目录
+          cp -rf ./temp_extract/dist/* ./
+          
+          # 清理临时文件
+          rm -rf ./temp_extract dist.zip
+      
+      # 5. 提交并推送更改
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # 检查是否有文件变更
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "没有检测到文件变更，跳过提交"
+            exit 0
+          fi
+          
+          git add .
+          git commit -m "Sync Sub-Store Front-End ${{ steps.get_url.outputs.version }} dist files"
+          git push origin main
+      
+      # 6. （可选）输出完成信息
+      - name: Done
+        if: always()
+        run: |
+          echo "同步完成！版本：${{ steps.get_url.outputs.version }}"
+          echo "提交时间：$(date)"
