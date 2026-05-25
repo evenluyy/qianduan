@@ -3,7 +3,6 @@ name: Sync Sub-Store Front-End Dist
 on:
   workflow_dispatch:
   schedule:
-    # 每 6 小时同步一次
     - cron: "0 */6 * * *"
 
 permissions:
@@ -14,14 +13,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. 检出仓库
+      # 1. Checkout
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
 
-      # 2. 获取最新 release 信息
+      # 2. 获取最新 release
       - name: Get Latest Release
         id: release
         run: |
@@ -40,15 +38,15 @@ jobs:
           ')
 
           if [ -z "$DIST_URL" ] || [ "$DIST_URL" = "null" ]; then
-            echo "❌ 未找到 dist.zip"
+            echo "❌ dist.zip not found"
             exit 1
           fi
 
-          echo "VERSION=$VERSION"
-          echo "DIST_URL=$DIST_URL"
-
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "dist_url=$DIST_URL" >> $GITHUB_OUTPUT
+
+          echo "Version: $VERSION"
+          echo "Dist URL: $DIST_URL"
 
       # 3. 下载 dist.zip
       - name: Download dist.zip
@@ -59,10 +57,9 @@ jobs:
             "${{ steps.release.outputs.dist_url }}" \
             -o dist.zip
 
-          echo "下载完成："
           ls -lh dist.zip
 
-      # 4. 解压文件
+      # 4. 解压
       - name: Extract dist.zip
         run: |
           set -euo pipefail
@@ -71,44 +68,35 @@ jobs:
 
           unzip -q dist.zip -d temp
 
-          echo "解压完成"
+          echo "Extracted files:"
+          find temp -maxdepth 2 -type f | head -20
 
-          find temp -maxdepth 2 -type f | head
-
-      # 5. 清理旧文件
-      - name: Clean old files
-        run: |
-          set -euo pipefail
-
-          find . -mindepth 1 -maxdepth 1 \
-            ! -name '.git' \
-            ! -name '.github' \
-            ! -name 'temp' \
-            ! -name 'dist.zip' \
-            -exec rm -rf {} +
-
-      # 6. 同步新 dist 文件
+      # 5. 同步 dist 文件
       - name: Sync dist files
         run: |
           set -euo pipefail
 
-          # 判断真实 dist 目录
           if [ -d "temp/dist" ]; then
             SOURCE_DIR="temp/dist"
           else
             SOURCE_DIR="temp"
           fi
 
-          echo "同步目录: $SOURCE_DIR"
+          echo "Source directory: $SOURCE_DIR"
 
-          rsync -av --delete "$SOURCE_DIR/" ./
+          rsync -av --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'temp' \
+            --exclude 'dist.zip' \
+            "$SOURCE_DIR/" ./
 
-      # 7. 清理临时文件
-      - name: Cleanup temp files
+      # 6. 清理
+      - name: Cleanup
         run: |
           rm -rf temp dist.zip
 
-      # 8. 提交变更
+      # 7. Commit
       - name: Commit changes
         run: |
           set -euo pipefail
@@ -119,21 +107,21 @@ jobs:
           git add .
 
           if git diff --cached --quiet; then
-            echo "✅ 没有文件变化"
+            echo "✅ No changes"
             exit 0
           fi
 
           git commit -m "sync: Sub-Store Front-End ${{ steps.release.outputs.version }}"
 
-      # 9. 推送
+      # 8. Push
       - name: Push changes
         run: |
           git push origin main
 
-      # 10. 输出结果
+      # 9. Done
       - name: Done
         if: always()
         run: |
-          echo "✅ Workflow Finished"
+          echo "✅ Sync completed"
           echo "📦 Version: ${{ steps.release.outputs.version }}"
-          echo "🕒 Time: $(date)"
+          echo "🕒 $(date)"
