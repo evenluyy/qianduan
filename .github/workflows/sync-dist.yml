@@ -3,7 +3,7 @@ name: Sync Sub-Store Front-End Dist
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    - cron: "10 13 * * 6"
 
 permissions:
   contents: write
@@ -15,7 +15,7 @@ jobs:
     steps:
       # 1. Checkout
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
