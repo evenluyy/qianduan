@@ -1,113 +1,139 @@
-name: Sync Sub-Store Front-End Latest Dist
+name: Sync Sub-Store Front-End Dist
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'
+    # 每 6 小时同步一次
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
 
 jobs:
-  fetch-and-sync:
+  sync-dist:
     runs-on: ubuntu-latest
-    
+
     steps:
-      # 1. 检出仓库 main 分支
-      - name: Checkout repository
+      # 1. 检出仓库
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           ref: main
-          persist-credentials: true
-      
-      # 2. 获取最新 release 的下载链接
-      - name: Get latest release download URL
-        id: get_url
+          fetch-depth: 0
+
+      # 2. 获取最新 release 信息
+      - name: Get Latest Release
+        id: release
         run: |
-          LATEST_RELEASE=$(curl -s https://api.github.com/repos/sub-store-org/Sub-Store-Front-End/releases/latest)
-          DIST_URL=$(echo "$LATEST_RELEASE" | grep -o 'https://github.com/sub-store-org/Sub-Store-Front-End/releases/download/[^"]*dist.zip' | head -1)
-          
-          if [ -z "$DIST_URL" ]; then
-            echo "错误：未找到 dist.zip 下载链接"
+          set -euo pipefail
+
+          API_URL="https://api.github.com/repos/sub-store-org/Sub-Store-Front-End/releases/latest"
+
+          RELEASE_JSON=$(curl -fsSL "$API_URL")
+
+          VERSION=$(echo "$RELEASE_JSON" | jq -r '.tag_name')
+
+          DIST_URL=$(echo "$RELEASE_JSON" | jq -r '
+            .assets[]
+            | select(.name == "dist.zip")
+            | .browser_download_url
+          ')
+
+          if [ -z "$DIST_URL" ] || [ "$DIST_URL" = "null" ]; then
+            echo "❌ 未找到 dist.zip"
             exit 1
           fi
-          
-          echo "下载链接: $DIST_URL"
-          echo "dist_url=$DIST_URL" >> $GITHUB_OUTPUT
-          
-          VERSION=$(echo "$LATEST_RELEASE" | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4)
+
+          echo "VERSION=$VERSION"
+          echo "DIST_URL=$DIST_URL"
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-      
-      # 3. 下载最新的 dist.zip
+          echo "dist_url=$DIST_URL" >> $GITHUB_OUTPUT
+
+      # 3. 下载 dist.zip
       - name: Download dist.zip
         run: |
-          curl -L -o dist.zip "${{ steps.get_url.outputs.dist_url }}"
-          echo "下载完成，文件大小："
+          set -euo pipefail
+
+          curl -fL \
+            "${{ steps.release.outputs.dist_url }}" \
+            -o dist.zip
+
+          echo "下载完成："
           ls -lh dist.zip
-      
-      # 4. 解压并复制文件（修复版 - 使用绝对路径）
-      - name: Unzip and copy files
+
+      # 4. 解压文件
+      - name: Extract dist.zip
         run: |
-          # 获取当前工作目录的绝对路径
-          WORK_DIR=$(pwd)
-          echo "工作目录: $WORK_DIR"
-          
-          # 创建临时目录并解压
-          mkdir -p temp_extract
-          unzip -o dist.zip -d temp_extract
-          
-          # 查看解压后的目录结构
-          echo "解压后的目录结构："
-          ls -la temp_extract/
-          
-          # 查找 dist 文件夹的实际位置
-          if [ -d "temp_extract/dist" ]; then
-            DIST_SOURCE="temp_extract/dist"
-          elif [ -d "temp_extract" ] && [ -f "temp_extract/index.html" ]; then
-            # 如果解压后直接就是文件（没有 dist 外层）
-            DIST_SOURCE="temp_extract"
+          set -euo pipefail
+
+          mkdir -p temp
+
+          unzip -q dist.zip -d temp
+
+          echo "解压完成"
+
+          find temp -maxdepth 2 -type f | head
+
+      # 5. 清理旧文件
+      - name: Clean old files
+        run: |
+          set -euo pipefail
+
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name '.github' \
+            ! -name 'temp' \
+            ! -name 'dist.zip' \
+            -exec rm -rf {} +
+
+      # 6. 同步新 dist 文件
+      - name: Sync dist files
+        run: |
+          set -euo pipefail
+
+          # 判断真实 dist 目录
+          if [ -d "temp/dist" ]; then
+            SOURCE_DIR="temp/dist"
           else
-            echo "错误：找不到 dist 文件夹或文件"
-            exit 1
+            SOURCE_DIR="temp"
           fi
-          
-          echo "源文件位置: $DIST_SOURCE"
-          echo "源文件内容："
-          ls -la $DIST_SOURCE
-          
-          # 删除当前目录下的旧文件（保留特殊文件夹）
-          find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' ! -name '.gitignore' ! -name '.github' -exec rm -rf {} + 2>/dev/null || true
-          
-          # 使用 rsync 复制文件（更可靠）
-          # 安装 rsync（通常已安装，这行作为保险）
-          sudo apt-get update && sudo apt-get install -y rsync
-          
-          # 复制所有文件到当前目录
-          rsync -av --delete "$DIST_SOURCE/" ./
-          
-          # 清理临时文件
-          rm -rf temp_extract dist.zip
-          
-          echo "复制完成，当前目录内容："
-          ls -la
-      
-      # 5. 提交并推送更改
-      - name: Commit and push
+
+          echo "同步目录: $SOURCE_DIR"
+
+          rsync -av --delete "$SOURCE_DIR/" ./
+
+      # 7. 清理临时文件
+      - name: Cleanup temp files
         run: |
+          rm -rf temp dist.zip
+
+      # 8. 提交变更
+      - name: Commit changes
+        run: |
+          set -euo pipefail
+
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 检查是否有文件变更
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add .
-          
+
           if git diff --cached --quiet; then
-            echo "没有检测到文件变更，跳过提交"
+            echo "✅ 没有文件变化"
             exit 0
           fi
-          
-          git commit -m "Sync Sub-Store Front-End ${{ steps.get_url.outputs.version }} dist files"
+
+          git commit -m "sync: Sub-Store Front-End ${{ steps.release.outputs.version }}"
+
+      # 9. 推送
+      - name: Push changes
+        run: |
           git push origin main
-      
-      # 6. 输出完成信息
+
+      # 10. 输出结果
       - name: Done
         if: always()
         run: |
-          echo "✅ 同步完成！版本：${{ steps.get_url.outputs.version }}"
-          echo "📅 提交时间：$(date)"
+          echo "✅ Workflow Finished"
+          echo "📦 Version: ${{ steps.release.outputs.version }}"
+          echo "🕒 Time: $(date)"
