@@ -3,7 +3,7 @@ name: Sync Sub-Store Front-End Latest Dist
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 13 * * 6'
+    - cron: '0 */6 * * *'
 
 jobs:
   fetch-and-sync:
@@ -42,38 +42,50 @@ jobs:
           echo "下载完成，文件大小："
           ls -lh dist.zip
       
-      # 4. 解压并复制文件（修复版）
+      # 4. 解压并复制文件（修复版 - 使用绝对路径）
       - name: Unzip and copy files
         run: |
-          # 创建临时目录并解压
-          mkdir -p ./temp_extract
-          unzip -o dist.zip -d ./temp_extract
+          # 获取当前工作目录的绝对路径
+          WORK_DIR=$(pwd)
+          echo "工作目录: $WORK_DIR"
           
-          # 验证解压后是否存在 dist 文件夹
-          if [ ! -d "./temp_extract/dist" ]; then
-            echo "错误：解压后未找到 dist 文件夹"
-            echo "实际目录结构："
-            ls -la ./temp_extract/
+          # 创建临时目录并解压
+          mkdir -p temp_extract
+          unzip -o dist.zip -d temp_extract
+          
+          # 查看解压后的目录结构
+          echo "解压后的目录结构："
+          ls -la temp_extract/
+          
+          # 查找 dist 文件夹的实际位置
+          if [ -d "temp_extract/dist" ]; then
+            DIST_SOURCE="temp_extract/dist"
+          elif [ -d "temp_extract" ] && [ -f "temp_extract/index.html" ]; then
+            # 如果解压后直接就是文件（没有 dist 外层）
+            DIST_SOURCE="temp_extract"
+          else
+            echo "错误：找不到 dist 文件夹或文件"
             exit 1
           fi
           
-          echo "解压成功，准备复制文件..."
-          ls -la ./temp_extract/dist/
+          echo "源文件位置: $DIST_SOURCE"
+          echo "源文件内容："
+          ls -la $DIST_SOURCE
           
-          # 删除当前目录下的旧文件（保留 .git、.github、.gitignore）
+          # 删除当前目录下的旧文件（保留特殊文件夹）
           find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' ! -name '.gitignore' ! -name '.github' -exec rm -rf {} + 2>/dev/null || true
           
-          # 使用 rsync 或 cp 的正确方式
-          # 方法1：先进入 dist 目录，复制所有内容（包括隐藏文件）
-          cd ./temp_extract/dist
-          cp -rf ./* ../../ || true
-          cp -rf ./.[!.]* ../../ 2>/dev/null || true  # 复制隐藏文件（如果有）
-          cd ../../
+          # 使用 rsync 复制文件（更可靠）
+          # 安装 rsync（通常已安装，这行作为保险）
+          sudo apt-get update && sudo apt-get install -y rsync
+          
+          # 复制所有文件到当前目录
+          rsync -av --delete "$DIST_SOURCE/" ./
           
           # 清理临时文件
-          rm -rf ./temp_extract dist.zip
+          rm -rf temp_extract dist.zip
           
-          echo "文件复制完成，当前目录内容："
+          echo "复制完成，当前目录内容："
           ls -la
       
       # 5. 提交并推送更改
@@ -83,12 +95,13 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
           # 检查是否有文件变更
-          if git diff --quiet && git diff --staged --quiet; then
+          git add .
+          
+          if git diff --cached --quiet; then
             echo "没有检测到文件变更，跳过提交"
             exit 0
           fi
           
-          git add .
           git commit -m "Sync Sub-Store Front-End ${{ steps.get_url.outputs.version }} dist files"
           git push origin main
       
@@ -96,5 +109,5 @@ jobs:
       - name: Done
         if: always()
         run: |
-          echo "同步完成！版本：${{ steps.get_url.outputs.version }}"
-          echo "提交时间：$(date)"
+          echo "✅ 同步完成！版本：${{ steps.get_url.outputs.version }}"
+          echo "📅 提交时间：$(date)"
